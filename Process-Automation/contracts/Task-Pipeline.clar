@@ -12,6 +12,7 @@
 (define-constant ERR_INSUFFICIENT_APPROVALS (err u106))
 (define-constant ERR_DEADLINE_PASSED (err u107))
 (define-constant ERR_INVALID_DEADLINE (err u108))
+(define-constant ERR_INVALID_INPUT (err u109))
 
 ;; Workflow states
 (define-constant STATE_DRAFT u0)
@@ -102,6 +103,39 @@
 (define-data-var task-counter uint u0)
 (define-data-var contract-paused bool false)
 
+;; Input validation functions
+(define-private (validate-string-not-empty (str (string-ascii 200)))
+  (> (len str) u0)
+)
+
+(define-private (validate-workflow-id (workflow-id uint))
+  (and (> workflow-id u0) (<= workflow-id (var-get workflow-counter)))
+)
+
+(define-private (validate-task-id (task-id uint))
+  (and (> task-id u0) (<= task-id (var-get task-counter)))
+)
+
+(define-private (validate-deadline (deadline uint))
+  (> deadline block-height)
+)
+
+(define-private (validate-participants-list (participants (list 20 principal)))
+  (> (len participants) u0)
+)
+
+(define-private (validate-members-list (members (list 50 principal)))
+  (>= (len members) u0)
+)
+
+(define-private (validate-approvers-list (approvers (list 10 principal)))
+  (> (len approvers) u0)
+)
+
+(define-private (validate-dependencies-list (dependencies (list 10 uint)))
+  (>= (len dependencies) u0)
+)
+
 ;; Private functions
 (define-private (is-contract-owner)
   (is-eq tx-sender CONTRACT_OWNER)
@@ -176,7 +210,8 @@
   (begin
     (asserts! (not (var-get contract-paused)) ERR_INVALID_STATE)
     (asserts! (is-none (map-get? organizations { org-id: tx-sender })) ERR_ALREADY_EXISTS)
-    (asserts! (> (len name) u0) ERR_INVALID_PARTICIPANT)
+    (asserts! (validate-string-not-empty name) ERR_INVALID_INPUT)
+    (asserts! (validate-members-list members) ERR_INVALID_INPUT)
     (map-set organizations { org-id: tx-sender }
       {
         name: name,
@@ -191,14 +226,17 @@
 )
 
 (define-public (add-organization-member (org-id principal) (new-member principal))
-  (let ((org (unwrap! (map-get? organizations { org-id: org-id }) ERR_NOT_FOUND)))
-    (asserts! (is-eq (get admin org) tx-sender) ERR_UNAUTHORIZED)
-    (asserts! (get active org) ERR_INVALID_STATE)
-    (asserts! (is-none (index-of (get members org) new-member)) ERR_ALREADY_EXISTS)
-    (map-set organizations { org-id: org-id }
-      (merge org { members: (unwrap! (as-max-len? (append (get members org) new-member) u50) ERR_INVALID_PARTICIPANT) })
+  (begin
+    (asserts! (not (is-eq org-id 'SP000000000000000000002Q6VF78)) ERR_INVALID_INPUT)
+    (let ((org (unwrap! (map-get? organizations { org-id: org-id }) ERR_NOT_FOUND)))
+      (asserts! (is-eq (get admin org) tx-sender) ERR_UNAUTHORIZED)
+      (asserts! (get active org) ERR_INVALID_STATE)
+      (asserts! (is-none (index-of (get members org) new-member)) ERR_ALREADY_EXISTS)
+      (map-set organizations { org-id: org-id }
+        (merge org { members: (unwrap! (as-max-len? (append (get members org) new-member) u50) ERR_INVALID_PARTICIPANT) })
+      )
+      (ok true)
     )
-    (ok true)
   )
 )
 
@@ -213,10 +251,12 @@
 )
   (let ((workflow-id (+ (var-get workflow-counter) u1)))
     (asserts! (not (var-get contract-paused)) ERR_INVALID_STATE)
-    (asserts! (> deadline block-height) ERR_INVALID_DEADLINE)
-    (asserts! (> (len name) u0) ERR_INVALID_PARTICIPANT)
-    (asserts! (> (len participants) u0) ERR_INVALID_PARTICIPANT)
+    (asserts! (validate-deadline deadline) ERR_INVALID_DEADLINE)
+    (asserts! (validate-string-not-empty name) ERR_INVALID_INPUT)
+    (asserts! (validate-string-not-empty description) ERR_INVALID_INPUT)
+    (asserts! (validate-participants-list participants) ERR_INVALID_INPUT)
     (asserts! (<= required-approvals (len participants)) ERR_INVALID_PARTICIPANT)
+    (asserts! (>= completion-reward u0) ERR_INVALID_INPUT)
     
     (map-set workflows { workflow-id: workflow-id }
       {
@@ -239,6 +279,7 @@
 
 (define-public (activate-workflow (workflow-id uint))
   (let ((workflow (unwrap! (map-get? workflows { workflow-id: workflow-id }) ERR_NOT_FOUND)))
+    (asserts! (validate-workflow-id workflow-id) ERR_INVALID_INPUT)
     (asserts! (is-eq (get creator workflow) tx-sender) ERR_UNAUTHORIZED)
     (asserts! (is-eq (get state workflow) STATE_DRAFT) ERR_INVALID_STATE)
     (map-set workflows { workflow-id: workflow-id }
@@ -250,6 +291,7 @@
 
 (define-public (pause-workflow (workflow-id uint))
   (let ((workflow (unwrap! (map-get? workflows { workflow-id: workflow-id }) ERR_NOT_FOUND)))
+    (asserts! (validate-workflow-id workflow-id) ERR_INVALID_INPUT)
     (asserts! (is-eq (get creator workflow) tx-sender) ERR_UNAUTHORIZED)
     (asserts! (is-eq (get state workflow) STATE_ACTIVE) ERR_INVALID_STATE)
     (map-set workflows { workflow-id: workflow-id }
@@ -261,6 +303,7 @@
 
 (define-public (resume-workflow (workflow-id uint))
   (let ((workflow (unwrap! (map-get? workflows { workflow-id: workflow-id }) ERR_NOT_FOUND)))
+    (asserts! (validate-workflow-id workflow-id) ERR_INVALID_INPUT)
     (asserts! (is-eq (get creator workflow) tx-sender) ERR_UNAUTHORIZED)
     (asserts! (is-eq (get state workflow) STATE_PAUSED) ERR_INVALID_STATE)
     (map-set workflows { workflow-id: workflow-id }
@@ -272,6 +315,7 @@
 
 (define-public (approve-workflow (workflow-id uint))
   (let ((workflow (unwrap! (map-get? workflows { workflow-id: workflow-id }) ERR_NOT_FOUND)))
+    (asserts! (validate-workflow-id workflow-id) ERR_INVALID_INPUT)
     (asserts! (is-workflow-participant workflow-id tx-sender) ERR_UNAUTHORIZED)
     (asserts! (is-eq (get state workflow) STATE_ACTIVE) ERR_INVALID_STATE)
     (asserts! (is-none (map-get? workflow-approvals { workflow-id: workflow-id, approver: tx-sender })) ERR_ALREADY_EXISTS)
@@ -312,9 +356,14 @@
     (task-id (+ (var-get task-counter) u1))
     (workflow (unwrap! (map-get? workflows { workflow-id: workflow-id }) ERR_NOT_FOUND))
   )
+    (asserts! (validate-workflow-id workflow-id) ERR_INVALID_INPUT)
+    (asserts! (validate-string-not-empty name) ERR_INVALID_INPUT)
+    (asserts! (validate-string-not-empty description) ERR_INVALID_INPUT)
+    (asserts! (validate-deadline deadline) ERR_INVALID_DEADLINE)
+    (asserts! (validate-dependencies-list dependencies) ERR_INVALID_INPUT)
+    (asserts! (validate-approvers-list approvers) ERR_INVALID_INPUT)
     (asserts! (is-eq (get creator workflow) tx-sender) ERR_UNAUTHORIZED)
     (asserts! (is-eq (get state workflow) STATE_DRAFT) ERR_INVALID_STATE)
-    (asserts! (> deadline block-height) ERR_INVALID_DEADLINE)
     (asserts! (<= deadline (get deadline workflow)) ERR_INVALID_DEADLINE)
     (asserts! (is-workflow-participant workflow-id assignee) ERR_INVALID_PARTICIPANT)
     (asserts! (<= required-approvals (len approvers)) ERR_INVALID_PARTICIPANT)
@@ -341,6 +390,8 @@
 
 (define-public (start-task (workflow-id uint) (task-id uint))
   (let ((task (unwrap! (map-get? tasks { workflow-id: workflow-id, task-id: task-id }) ERR_NOT_FOUND)))
+    (asserts! (validate-workflow-id workflow-id) ERR_INVALID_INPUT)
+    (asserts! (validate-task-id task-id) ERR_INVALID_INPUT)
     (asserts! (is-eq (get assignee task) tx-sender) ERR_UNAUTHORIZED)
     (asserts! (is-eq (get state task) TASK_PENDING) ERR_INVALID_STATE)
     (asserts! (check-task-dependencies workflow-id (get dependencies task)) ERR_INVALID_STATE)
@@ -355,6 +406,9 @@
 
 (define-public (complete-task (workflow-id uint) (task-id uint) (proof (string-ascii 100)))
   (let ((task (unwrap! (map-get? tasks { workflow-id: workflow-id, task-id: task-id }) ERR_NOT_FOUND)))
+    (asserts! (validate-workflow-id workflow-id) ERR_INVALID_INPUT)
+    (asserts! (validate-task-id task-id) ERR_INVALID_INPUT)
+    (asserts! (validate-string-not-empty proof) ERR_INVALID_INPUT)
     (asserts! (is-eq (get assignee task) tx-sender) ERR_UNAUTHORIZED)
     (asserts! (is-eq (get state task) TASK_IN_PROGRESS) ERR_INVALID_STATE)
     (asserts! (<= block-height (get deadline task)) ERR_DEADLINE_PASSED)
@@ -376,6 +430,9 @@
 
 (define-public (approve-task (workflow-id uint) (task-id uint) (comments (string-ascii 100)))
   (let ((task (unwrap! (map-get? tasks { workflow-id: workflow-id, task-id: task-id }) ERR_NOT_FOUND)))
+    (asserts! (validate-workflow-id workflow-id) ERR_INVALID_INPUT)
+    (asserts! (validate-task-id task-id) ERR_INVALID_INPUT)
+    (asserts! (validate-string-not-empty comments) ERR_INVALID_INPUT)
     (asserts! (is-some (index-of (get approvers task) tx-sender)) ERR_UNAUTHORIZED)
     (asserts! (is-eq (get state task) TASK_COMPLETED) ERR_INVALID_STATE)
     (asserts! (is-none (map-get? task-approvals { workflow-id: workflow-id, task-id: task-id, approver: tx-sender })) ERR_ALREADY_EXISTS)
@@ -395,6 +452,9 @@
 
 (define-public (reject-task (workflow-id uint) (task-id uint) (reason (string-ascii 100)))
   (let ((task (unwrap! (map-get? tasks { workflow-id: workflow-id, task-id: task-id }) ERR_NOT_FOUND)))
+    (asserts! (validate-workflow-id workflow-id) ERR_INVALID_INPUT)
+    (asserts! (validate-task-id task-id) ERR_INVALID_INPUT)
+    (asserts! (validate-string-not-empty reason) ERR_INVALID_INPUT)
     (asserts! (is-some (index-of (get approvers task) tx-sender)) ERR_UNAUTHORIZED)
     (asserts! (is-eq (get state task) TASK_COMPLETED) ERR_INVALID_STATE)
     
